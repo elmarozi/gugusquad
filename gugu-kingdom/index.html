@@ -560,11 +560,25 @@ var NFT_CONTRACT   = "0x9578F8a40228f44f31A9E4bc179E1112f7fA4157";
 var GGR_TOKEN      = "0x37B7f53d320d36E37c1dd8FD53311B9c32f93565";
 var GGR_PAIR       = "0xb1ba4c7ebfb43a1cfb59227f5df6eac66df3467b";
 var BSC_CHAIN_ID   = 56;
-var RPC_URLS = ["https://bsc-dataseed1.binance.org", "https://bsc-dataseed2.binance.org"];
+/* Read-only BSC RPCs across several independent domains, tried in order with
+   failover. binance.org sits last on purpose: some ISPs (notably in Indonesia)
+   block the whole binance.org domain, which used to take the scan down with it. */
+var RPC_URLS = [
+  "https://bsc-dataseed.bnbchain.org",
+  "https://bsc-dataseed-public.bnbchain.org",
+  "https://bsc-dataseed1.defibit.io",
+  "https://bsc-dataseed1.ninicoin.io",
+  "https://bsc.publicnode.com",
+  "https://1rpc.io/bnb",
+  "https://bsc-dataseed1.binance.org",
+  "https://bsc-dataseed2.binance.org"
+];
 var IPFS_GATEWAY = "https://gateway.pinata.cloud/ipfs/";
 var METADATA_CID = "QmTHNZySSRKRPMkhygU2qKA6YJ7w6NK9GhfPM37W4kwDtZ";
 var TOTAL_SUPPLY = 500;
-var SCAN_CHUNK = 50;
+/* 20 calls per batch: the dataseed nodes reject a 50-call eth_call batch with
+   a -32005 rate-limit error, while 20 passes reliably. */
+var SCAN_CHUNK = 20;
 
 /* FINAL economy 2026-11-06 */
 var BASE_RATES = [5, 8, 10, 25];
@@ -621,6 +635,34 @@ function toast(msg){
 }
 
 /* ================= JSON-RPC (read-only) ================= */
+/* Robustness rules, learned from a real scan failure:
+   - Responses are matched back to requests by JSON-RPC id, because a node
+     may answer a batch out of order (positional matching can credit a token
+     to the wrong owner).
+   - A whole-batch error payload (the dataseed nodes answer an oversized or
+     rate-limited batch with a single -32005 error object, HTTP 200) counts
+     as an endpoint failure and fails over — it is not scan data.
+   - An incomplete batch (fewer answers than calls) also fails over.
+   - Every attempt times out after 15s, so one hung endpoint cannot stall
+     the scan forever, and the endpoint that worked is tried first next time. */
+function rpcFetch(url, body){
+  var payload = JSON.stringify(body);
+  function go(signal){
+    var opts = { method:"POST", headers:{ "Content-Type":"application/json" }, body: payload };
+    if (signal) opts.signal = signal;
+    return fetch(url, opts).then(function(res){
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return res.json();
+    });
+  }
+  if (typeof AbortController === "undefined") return go(null);
+  var ctl = new AbortController();
+  var timer = setTimeout(function(){ ctl.abort(); }, 15000);
+  return go(ctl.signal).then(
+    function(j){ clearTimeout(timer); return j; },
+    function(e){ clearTimeout(timer); throw e; }
+  );
+}
 function rpcBatch(calls){
   var body = calls.map(function(c, i){
     return { jsonrpc:"2.0", id:i+1, method:"eth_call", params:[{ to:c.to, data:c.data }, "latest"] };
@@ -628,15 +670,21 @@ function rpcBatch(calls){
   var attempt = 0;
   function tryNext(){
     if (attempt >= RPC_URLS.length) return Promise.reject(new Error("All BSC RPCs are unreachable."));
-    var url = RPC_URLS[(rpcIndex + attempt) % RPC_URLS.length];
+    var idx = (rpcIndex + attempt) % RPC_URLS.length;
     attempt++;
-    return fetch(url, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(body) })
-      .then(function(res){ if (!res.ok) throw new Error("HTTP " + res.status); return res.json(); })
-      .then(function(json){
-        var arr = Array.isArray(json) ? json : [json];
-        return arr.map(function(r){ return (r && r.result) ? r.result : null; });
-      })
-      .catch(function(){ return tryNext(); });
+    return rpcFetch(RPC_URLS[idx], body).then(function(json){
+      var arr = Array.isArray(json) ? json : [json];
+      var errorOnly = arr.length > 0 && arr.every(function(r){ return !r || (r.error && !r.result); });
+      if (errorOnly) throw new Error("RPC returned an error");
+      if (arr.length !== calls.length) throw new Error("Incomplete RPC response");
+      var byId = {};
+      arr.forEach(function(r){ if (r && typeof r.id === "number") byId[r.id] = r; });
+      rpcIndex = idx;
+      return calls.map(function(c, i){
+        var r = byId[i + 1] || arr[i];
+        return (r && r.result) ? r.result : null;
+      });
+    }).catch(function(){ return tryNext(); });
   }
   return tryNext();
 }
@@ -656,7 +704,7 @@ function ensureBscNetwork(){
           return window.ethereum.request({ method:"wallet_addEthereumChain", params:[{
             chainId:"0x38", chainName:"BNB Smart Chain",
             nativeCurrency:{ name:"BNB", symbol:"BNB", decimals:18 },
-            rpcUrls:["https://bsc-dataseed.binance.org"],
+            rpcUrls:["https://bsc-dataseed.bnbchain.org"],
             blockExplorerUrls:["https://bscscan.com"]
           }]});
         }
