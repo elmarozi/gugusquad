@@ -1,0 +1,23 @@
+{
+  "name": "Gugu Squad #206",
+  "description": "Gugu Squad (GUGU) is an original penguin NFT collection on BNB Chain: 500 tokens, free mint, 1 per wallet. Four variants: Original, Winter (Musim Dingin), Chef (Koki), and Galaxy (Galaksi, rare, only 25).",
+  "image": "https://gugusquad.xyz/metadata-v2/art/koki-stage1.png",
+  "attributes": [
+    {
+      "trait_type": "Varian",
+      "value": "Koki"
+    },
+    {
+      "trait_type": "Rarity",
+      "value": "Uncommon"
+    },
+    {
+      "trait_type": "Collection",
+      "value": "Gugu Squad"
+    },
+    {
+      "trait_type": "Stage",
+      "value": 0
+    }
+  ]
+}
